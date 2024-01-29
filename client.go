@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -12,12 +13,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Структура для ответа сервера
+// Structure for the server response
 type ServerResponse struct {
 	SubscriberUID string `json:"subscriber_uid"`
 }
 
-// Структура для входящего сообщения
+// Structure for an incoming message
 type IncomingMessage struct {
 	Request struct {
 		Method    string `json:"method"`
@@ -38,23 +39,28 @@ type IncomingMessage struct {
 	Response interface{} `json:"response"`
 }
 
-// Функция для получения MAC-адреса устройства
+// Function for obtaining the MAC address of the device
 func getMACAddress() (string, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return "", err
 	}
+
 	for _, interf := range interfaces {
-		if len(interf.HardwareAddr) > 0 {
-			return interf.HardwareAddr.String(), nil
+		if interf.Name == "br-lan" { // Check if the interface name matches
+			if len(interf.HardwareAddr) > 0 {
+				return interf.HardwareAddr.String(), nil
+			}
+			return "", errors.New("MAC address for br-lan interface not found")
 		}
 	}
-	return "", fmt.Errorf("MAC адрес не найден")
+
+	return "", errors.New("br-lan interface not found")
 }
 
-// Функция для выполнения HTTP-запроса и получения subscriber_uid
+// Function to make an HTTP request and get subscriber_uid
 func makeRequest(macAddress string) (string, error) {
-	resp, err := http.Get("http://0.0.0.0:8888/api/v1.0/adapter/" + macAddress + "/udpu")
+	resp, err := http.Get("http://161.184.221.236:8887/api/v1.0/adapter/" + macAddress + "/udpu")
 	if err != nil {
 		return "", err
 	}
@@ -75,19 +81,19 @@ func makeRequest(macAddress string) (string, error) {
 	return respObj.SubscriberUID, nil
 }
 
-// Функция для подключения и поддержания соединения с WebSocket
+// Function for connecting and maintaining a connection with WebSocket
 func connectWebSocket(subscriberUID string) {
 	for {
 		err := connectAndListen(subscriberUID)
 		if err != nil {
-			log.Println("Ошибка при подключении к WebSocket:", err)
-			log.Println("Попытка переподключения через 5 секунд...")
+			log.Println("Error connecting to WebSocket:", err)
+			log.Println("Attempting to reconnect after 5 seconds...")
 			time.Sleep(5 * time.Second)
 		}
 	}
 }
 
-// Функция для отправки запроса на подписку
+// Function for sending a subscription request
 func subscribeToTopics(c *websocket.Conn, subscriberUID string) error {
 	subscriptionMessage := map[string]interface{}{
 		"request": map[string]interface{}{
@@ -106,7 +112,7 @@ func subscribeToTopics(c *websocket.Conn, subscriberUID string) error {
 	return c.WriteMessage(websocket.TextMessage, message)
 }
 
-// Функция для обработки и отправки ответа
+// Function for processing and sending a response
 func processAndRespond(c *websocket.Conn, message []byte, subscriberUID string) error {
 	var incomingMsg IncomingMessage
 	err := json.Unmarshal(message, &incomingMsg)
@@ -115,13 +121,12 @@ func processAndRespond(c *websocket.Conn, message []byte, subscriberUID string) 
 		return err
 	}
 
-	fmt.Println("incomingMsg: ", incomingMsg)
 	fmt.Println("incomingMsg.Request.Arguments.Subscription.Topic : ", incomingMsg.Request.Arguments.Subscription.Topic)
 	fmt.Println("subscriberUID: ", subscriberUID)
 
-	// Проверка соответствия topic и Subscriber UID
+	// Verifying topic and Subscriber UID matches
 	if incomingMsg.Request.Arguments.Subscription.Topic != subscriberUID {
-		return nil // Ничего не делаем, если topic не соответствует
+		return nil // Do nothing if topic does not match
 	}
 
 	responseObj := map[string]interface{}{
@@ -154,9 +159,9 @@ func processAndRespond(c *websocket.Conn, message []byte, subscriberUID string) 
 	return c.WriteMessage(websocket.TextMessage, responseMsg)
 }
 
-// Функция для подключения к WebSocket и прослушивания сообщений
+// Function to connect to WebSocket and listen to messages
 func connectAndListen(subscriberUID string) error {
-	u := "ws://0.0.0.0:8888/api/v1.0/pubsub"
+	u := "ws://161.184.221.236:8887/api/v1.0/pubsub"
 	c, _, err := websocket.DefaultDialer.Dial(u, nil)
 	if err != nil {
 		return err
@@ -176,29 +181,29 @@ func connectAndListen(subscriberUID string) error {
 
 		err = processAndRespond(c, message, subscriberUID)
 		if err != nil {
-			log.Println("Ошибка при обработке и отправке ответа:", err)
+			log.Println("Error processing and sending response:", err)
 		}
 	}
 }
 
 func main() {
-	// Получение MAC-адреса
+	// Obtaining a MAC Address
 	mac, err := getMACAddress()
 	if err != nil {
-		fmt.Println("Ошибка при получении MAC-адреса:", err)
+		fmt.Println("Error while obtaining MAC address:", err)
 		return
 	}
-	fmt.Println("MAC-адрес:", mac)
+	fmt.Println("MAC-address:", mac)
 
-	// Выполнение HTTP-запроса
+	// Making an HTTP Request
 	subscriberUID, err := makeRequest(mac)
 	if err != nil {
-		fmt.Println("Ошибка при выполнении HTTP-запроса:", err)
+		fmt.Println("Error while making HTTP request:", err)
 		return
 	}
 
 	fmt.Println("Subscriber UID:", subscriberUID)
 
-	// Подключение к WebSocket и поддержание соединения
+	// Connect to WebSocket and maintain connection
 	connectWebSocket(subscriberUID)
 }
