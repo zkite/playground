@@ -55,7 +55,7 @@ func getMACAddress() (string, error) {
 		}
 	}
 
-	return "", errors.New("br-lan interface not found")
+	return "", errors.New("br-lan interface is not found")
 }
 
 // Function to make an HTTP request and get subscriber_uid
