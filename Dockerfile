@@ -1,15 +1,33 @@
-# Используйте официальный образ Go как базовый
-FROM golang:latest
+FROM debian:buster
 
-# Установите кросс-компилятор для arm64
-RUN apt-get update && \
-    apt-get install -y crossbuild-essential-arm64
+# Установка зависимостей
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    wget \
+    musl-dev \
+    crossbuild-essential-arm64 \
+ && rm -rf /var/lib/apt/lists/*
 
-# Установите переменные окружения для кросс-компиляции
+# Загрузка и установка Go
+ENV GOLANG_VERSION 1.21.6
+
+RUN wget -O go.tgz "https://golang.org/dl/go${GOLANG_VERSION}.linux-amd64.tar.gz" \
+    && tar -C /usr/local -xzf go.tgz \
+    && rm go.tgz
+
+ENV PATH="/usr/local/go/bin:$PATH"
+
+# Загрузка и распаковка кросс-компилятора
+RUN wget -P /root https://musl.cc/aarch64-linux-musl-cross.tgz \
+ && tar -xvf /root/aarch64-linux-musl-cross.tgz -C /root
+
+# Настройка переменных окружения для кросс-компиляции
 ENV CGO_ENABLED=1 \
     GOOS=linux \
     GOARCH=arm64 \
-    CC=aarch64-linux-gnu-gcc
+    CC=/root//aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+    
 
-# Установите рабочую директорию
 WORKDIR /workdir
+

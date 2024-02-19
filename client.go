@@ -19,7 +19,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var addr = "0.0.0.0:8888"
+var addr = "161.184.221.236:8887"
 
 func executeCommand(command string) (string, error) {
 	cmd := exec.Command("bash", "-c", command)
