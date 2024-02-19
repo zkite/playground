@@ -1,24 +1,42 @@
 package main
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net"
 	"net/http"
+	"net/url"
+	"os/exec"
 	"time"
 
+	"hello/db"
+	"hello/response"
+
 	"github.com/gorilla/websocket"
+	_ "github.com/mattn/go-sqlite3"
 )
 
-// Structure for the server response
-type ServerResponse struct {
-	SubscriberUID string `json:"subscriber_uid"`
+var addr = "0.0.0.0:8888"
+
+func executeCommand(command string) (string, error) {
+	cmd := exec.Command("bash", "-c", command)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return stderr.String(), err
+	}
+
+	return stdout.String(), nil
 }
 
-// Structure for an incoming message
 type IncomingMessage struct {
 	Request struct {
 		Method    string `json:"method"`
@@ -39,28 +57,19 @@ type IncomingMessage struct {
 	Response interface{} `json:"response"`
 }
 
-// Function for obtaining the MAC address of the device
 func getMACAddress() (string, error) {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return "", err
-	}
-
-	for _, interf := range interfaces {
-		if interf.Name == "br-lan" { // Check if the interface name matches
-			if len(interf.HardwareAddr) > 0 {
-				return interf.HardwareAddr.String(), nil
-			}
-			return "", errors.New("MAC address for br-lan interface not found")
-		}
-	}
-
-	return "", errors.New("br-lan interface is not found")
+	return "00:1B:44:11:3A:B5", nil
 }
 
-// Function to make an HTTP request and get subscriber_uid
-func makeRequest(macAddress string) (string, error) {
-	resp, err := http.Get("http://161.184.221.236:8887/api/v1.0/adapter/" + macAddress + "/udpu")
+func makeRequest(macAddress string, database *sql.DB) (string, error) {
+
+	u := url.URL{
+		Scheme: "http",
+		Host:   addr,
+		Path:   "/api/v1.0/adapter/" + macAddress + "/udpu",
+	}
+
+	resp, err := http.Get(u.String())
 	if err != nil {
 		return "", err
 	}
@@ -71,29 +80,27 @@ func makeRequest(macAddress string) (string, error) {
 		return "", err
 	}
 
-	var respObj ServerResponse
+	var respObj response.ServerResponse
 	err = json.Unmarshal(body, &respObj)
 	if err != nil {
 		return "", err
 	}
 
-	fmt.Println("uDPU:", respObj)
+	jsonResponse, err := json.Marshal(respObj)
+	if err != nil {
+		log.Fatalf("Error occurred during marshalling. Error: %s", err.Error())
+	}
+
+	// Выводим результат - JSON строку
+	fmt.Println(string(jsonResponse))
+
+	if err := db.InsertIntoClient(database, &respObj); err != nil {
+		log.Fatalf("Failed to insert data into client table: %v", err)
+	}
+
 	return respObj.SubscriberUID, nil
 }
 
-// Function for connecting and maintaining a connection with WebSocket
-func connectWebSocket(subscriberUID string) {
-	for {
-		err := connectAndListen(subscriberUID)
-		if err != nil {
-			log.Println("Error connecting to WebSocket:", err)
-			log.Println("Attempting to reconnect after 5 seconds...")
-			time.Sleep(5 * time.Second)
-		}
-	}
-}
-
-// Function for sending a subscription request
 func subscribeToTopics(c *websocket.Conn, subscriberUID string) error {
 	subscriptionMessage := map[string]interface{}{
 		"request": map[string]interface{}{
@@ -112,98 +119,118 @@ func subscribeToTopics(c *websocket.Conn, subscriberUID string) error {
 	return c.WriteMessage(websocket.TextMessage, message)
 }
 
-// Function for processing and sending a response
-func processAndRespond(c *websocket.Conn, message []byte, subscriberUID string) error {
-	var incomingMsg IncomingMessage
-	err := json.Unmarshal(message, &incomingMsg)
-	if err != nil {
-		fmt.Println("err: ", err)
-		return err
-	}
+func processAndRespondAsync(c *websocket.Conn, message []byte, subscriberUID string) {
+	go func() {
+		var incomingMsg IncomingMessage
+		err := json.Unmarshal(message, &incomingMsg)
+		if err != nil {
+			log.Println("Error unmarshalling message:", err)
+			return
+		}
 
-	fmt.Println("incomingMsg.Request.Arguments.Subscription.Topic : ", incomingMsg.Request.Arguments.Subscription.Topic)
-	fmt.Println("subscriberUID: ", subscriberUID)
+		if incomingMsg.Request.Arguments.Subscription.Topic != subscriberUID {
+			return // Ignore if topic does not match
+		}
 
-	// Verifying topic and Subscriber UID matches
-	if incomingMsg.Request.Arguments.Subscription.Topic != subscriberUID {
-		return nil // Do nothing if topic does not match
-	}
+		output, err := executeCommand(incomingMsg.Request.Arguments.Data.Command)
+		if err != nil {
+			log.Printf("Error executing command: %s\nOutput: %s\n", err, output)
+			return
+		}
+		log.Println("Command output:", output)
 
-	responseObj := map[string]interface{}{
-		"stdout":   incomingMsg.Request.Arguments.Data.Command,
-		"stderr":   "",
-		"datetime": time.Now().Format(time.RFC3339),
-		"type":     incomingMsg.Request.Arguments.Data.ActionType,
-	}
-
-	responseMessage := map[string]interface{}{
-		"request": map[string]interface{}{
-			"method": "publish",
-			"arguments": map[string]interface{}{
-				"topics": []string{"server"},
-				"data":   responseObj,
-				"sync":   true,
+		responseMessage := map[string]interface{}{
+			"request": map[string]interface{}{
+				"method": "publish",
+				"arguments": map[string]interface{}{
+					"topics":      []string{"server"},
+					"data":        map[string]string{"stdout": output},
+					"sync":        true,
+					"notifier_id": nil,
+				},
+				"call_id": incomingMsg.Request.CallID,
 			},
-			"call_id": "86d65b4254f1436089bdbb43c96628b6",
-		},
-		"response": nil,
-	}
+			"response": nil,
+		}
 
-	fmt.Println("responseMessage: ", responseMessage)
+		responseMsg, err := json.Marshal(responseMessage)
+		if err != nil {
+			log.Println("Error marshalling response message:", err)
+			return
+		}
 
-	responseMsg, err := json.Marshal(responseMessage)
-	if err != nil {
-		return err
-	}
-
-	return c.WriteMessage(websocket.TextMessage, responseMsg)
+		err = c.WriteMessage(websocket.TextMessage, responseMsg)
+		if err != nil {
+			log.Println("Error sending response message:", err)
+			return
+		}
+	}()
 }
 
-// Function to connect to WebSocket and listen to messages
-func connectAndListen(subscriberUID string) error {
-	u := "ws://161.184.221.236:8887/api/v1.0/pubsub"
-	c, _, err := websocket.DefaultDialer.Dial(u, nil)
+func tryConnectAndListen(subscriberUID string) error {
+	u := url.URL{Scheme: "ws", Host: addr, Path: "/api/v1.0/pubsub"}
+	log.Printf("Connecting to %s", u.String())
+
+	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
+		log.Println("Dial error:", err)
 		return err
 	}
 	defer c.Close()
 
-	err = subscribeToTopics(c, subscriberUID)
-	if err != nil {
+	if err := subscribeToTopics(c, subscriberUID); err != nil {
 		return err
 	}
 
 	for {
 		_, message, err := c.ReadMessage()
 		if err != nil {
-			return err
+			log.Println("Read error:", err)
+			return err // Return error to trigger a reconnect
 		}
 
-		err = processAndRespond(c, message, subscriberUID)
+		processAndRespondAsync(c, message, subscriberUID)
+	}
+}
+
+func connectWebSocket(subscriberUID string) {
+	for {
+		err := tryConnectAndListen(subscriberUID)
 		if err != nil {
-			log.Println("Error processing and sending response:", err)
+			log.Println("Error connecting to WebSocket. Reconnecting in 5 seconds...", err)
+			time.Sleep(5 * time.Second)
+			continue
 		}
+		break // If connected and no error occurred, exit loop
 	}
 }
 
 func main() {
-	// Obtaining a MAC Address
+	database, err := sql.Open("sqlite3", "./client.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer database.Close()
+
+	// Вызов функции createTables из пакета db
+	if err := db.CreateTables(database); err != nil {
+		log.Fatal(err)
+	}
+
 	mac, err := getMACAddress()
 	if err != nil {
-		fmt.Println("Error while obtaining MAC address:", err)
-		return
+		log.Fatalf("Error obtaining MAC address: %v", err)
 	}
-	fmt.Println("MAC-address:", mac)
+	log.Printf("MAC address: %s", mac)
 
-	// Making an HTTP Request
-	subscriberUID, err := makeRequest(mac)
+	subscriberUID, err := makeRequest(mac, database)
 	if err != nil {
-		fmt.Println("Error while making HTTP request:", err)
-		return
+		log.Fatalf("Error making request: %v", err)
 	}
+	log.Printf("Subscriber UID: %s", subscriberUID)
 
-	fmt.Println("Subscriber UID:", subscriberUID)
+	go connectWebSocket(subscriberUID) // Run in a goroutine to not block main
 
-	// Connect to WebSocket and maintain connection
-	connectWebSocket(subscriberUID)
+	// Keep the main function alive
+	select {}
 }
