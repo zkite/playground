@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -13,13 +14,14 @@ import (
 	"time"
 
 	"hello/db"
+	"hello/discovery"
 	"hello/response"
 
 	"github.com/gorilla/websocket"
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var addr = "localhost:8888"
+var addr = "161.184.221.236:8887"
 
 func executeCommand(command string) (string, error) {
 	cmd := exec.Command("bash", "-c", command)
@@ -247,42 +249,42 @@ func processUdpuData(database *sql.DB, respObj *response.ServerResponse) {
 
 func main() {
 
-	// var (
-	// 	discoveryServerHost = flag.String("discovery-host", "", "The discovery server host")
-	// 	discoveryServerPort = flag.Int("discovery-port", 0, "The discovery server port")
-	// )
-	// flag.Parse()
+	var (
+		discoveryServerHost = flag.String("discovery-host", "", "The discovery server host")
+		discoveryServerPort = flag.Int("discovery-port", 0, "The discovery server port")
+	)
+	flag.Parse()
 
-	var server_host = "localhost"
-	var server_port = 8888
+	// var server_host = "localhost"
+	// var server_port = 8888
 
-	// discovery server
-	// var server_host string
-	// var server_port int
-	// for server_host == "" {
-	// 	log.Println("Trying to get server server_host/server_port from discovery service")
-	// 	server_host, server_port = discovery.Discovery(discoveryServerHost, discoveryServerPort, "server", 2)
-	// 	if server_host == "" {
-	// 		log.Println("No server discovered, retrying in 5 seconds...")
-	// 		time.Sleep(5 * time.Second)
-	// 	} else {
-	// 		log.Printf("Discovered server: %s:%d\n", server_host, server_port)
-	// 	}
-	// }
+	//discovery server
+	var server_host string
+	var server_port int
+	for server_host == "" {
+		log.Println("Trying to get server server_host/server_port from discovery service")
+		server_host, server_port = discovery.Discovery(*discoveryServerHost, *discoveryServerPort, "server", 2)
+		if server_host == "" {
+			log.Println("No server discovered, retrying in 5 seconds...")
+			time.Sleep(5 * time.Second)
+		} else {
+			log.Printf("Discovered server: %s:%d\n", server_host, server_port)
+		}
+	}
 
-	// // discovery repo
-	// var repo_host string
-	// var repo_port int
-	// for repo_host == "" {
-	// 	log.Println("Trying to get repo repo_host/repo_port from discovery service")
-	// 	repo_host, repo_port = discovery.Discovery(discoveryServerHost, discoveryServerPort, "repo", 2)
-	// 	if repo_host == "" {
-	// 		log.Println("No server discovered, retrying in 5 seconds...")
-	// 		time.Sleep(5 * time.Second)
-	// 	} else {
-	// 		log.Printf("Discovered repo: %s:%d\n", repo_host, repo_port)
-	// 	}
-	// }
+	// discovery repo
+	var repo_host string
+	var repo_port int
+	for repo_host == "" {
+		log.Println("Trying to get repo repo_host/repo_port from discovery service")
+		repo_host, repo_port = discovery.Discovery(*discoveryServerHost, *discoveryServerPort, "repo", 2)
+		if repo_host == "" {
+			log.Println("No server discovered, retrying in 5 seconds...")
+			time.Sleep(5 * time.Second)
+		} else {
+			log.Printf("Discovered repo: %s:%d\n", repo_host, repo_port)
+		}
+	}
 
 	database, err := sql.Open("sqlite3", "./client.db")
 	if err != nil {
