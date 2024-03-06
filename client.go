@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -14,14 +13,13 @@ import (
 	"time"
 
 	"hello/db"
-	"hello/discovery"
 	"hello/response"
 
 	"github.com/gorilla/websocket"
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var addr = "161.184.221.236:8887"
+var addr = "localhost:8888"
 
 func executeCommand(command string) (string, error) {
 	cmd := exec.Command("bash", "-c", command)
@@ -63,7 +61,8 @@ func getMACAddress() (string, error) {
 	return "00:1B:44:11:3A:18", nil
 }
 
-func makeRequest(serverHost string, serverPort int, macAddress string, database *sql.DB) (string, error) {
+func makeRequest(serverHost string, serverPort int, macAddress string) (response.ServerResponse, error) {
+	var respObj response.ServerResponse
 
 	u := url.URL{
 		Scheme: "http",
@@ -73,19 +72,18 @@ func makeRequest(serverHost string, serverPort int, macAddress string, database 
 
 	resp, err := http.Get(u.String())
 	if err != nil {
-		return "", err
+		return respObj, err
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return respObj, err
 	}
 
-	var respObj response.ServerResponse
 	err = json.Unmarshal(body, &respObj)
 	if err != nil {
-		return "", err
+		return respObj, err
 	}
 
 	jsonResponse, err := json.Marshal(respObj)
@@ -93,14 +91,9 @@ func makeRequest(serverHost string, serverPort int, macAddress string, database 
 		log.Fatalf("Error occurred during marshalling. Error: %s", err.Error())
 	}
 
-	// Выводим результат - JSON строку
 	fmt.Println(string(jsonResponse))
 
-	if err := db.InsertIntoClient(database, &respObj); err != nil {
-		log.Fatalf("Failed to insert data into client table: %v", err)
-	}
-
-	return respObj.SubscriberUID, nil
+	return respObj, nil
 }
 
 func subscribeToTopics(c *websocket.Conn, subscriberUID string) error {
@@ -207,44 +200,89 @@ func connectWebSocket(subscriberUID string) {
 	}
 }
 
+func waitForData(serverHost string, serverPort int, macAddress string) (*response.ServerResponse, error) {
+	var respObj response.ServerResponse
+	var err error
+
+	for {
+		log.Printf("Trying to get uDPU object from server %s", serverHost)
+		respObj, err = makeRequest(serverHost, serverPort, macAddress)
+		if err != nil {
+			log.Printf("Error making request: %v", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		if respObj.SubscriberUID != "" {
+			log.Printf("Udpu: %+v", respObj)
+			break
+		} else {
+			time.Sleep(5 * time.Second)
+		}
+	}
+
+	return &respObj, nil
+}
+
+func processUdpuData(database *sql.DB, respObj *response.ServerResponse) {
+	data := db.GetData(database, "client", respObj.SubscriberUID)
+	if data == nil {
+		err := db.InsertIntoClient(database, respObj)
+		if err != nil {
+			log.Fatalf("Failed to insert data into client table: %v", err)
+		}
+	} else {
+		fields := map[string]interface{}{
+			"udpu_upstream_qos":   respObj.UpstreamQoS,
+			"udpu_downstream_qos": respObj.DownstreamQoS,
+			"udpu_hostname":       respObj.Hostname,
+			"udpu_location":       respObj.Location,
+			"udpu_role":           respObj.Role,
+			"boot_status":         "every_boot",
+		}
+
+		db.UpdateData(database, "client", respObj.SubscriberUID, fields)
+	}
+}
+
 func main() {
 
-	var (
-		discoveryServerHost = flag.String("discovery-host", "", "The discovery server host")
-		discoveryServerPort = flag.Int("discovery-port", 0, "The discovery server port")
-	)
-	flag.Parse()
+	// var (
+	// 	discoveryServerHost = flag.String("discovery-host", "", "The discovery server host")
+	// 	discoveryServerPort = flag.Int("discovery-port", 0, "The discovery server port")
+	// )
+	// flag.Parse()
 
-	// var discoveryServerHost = "161.184.221.236"
-	// var discoveryServerPort = 8888
+	var server_host = "localhost"
+	var server_port = 8888
 
 	// discovery server
-	var server_host string
-	var server_port int
-	for server_host == "" {
-		log.Println("Trying to get server server_host/server_port from discovery service")
-		server_host, server_port = discovery.Discovery(*discoveryServerHost, *discoveryServerPort, "server", 2)
-		if server_host == "" {
-			log.Println("No server discovered, retrying in 5 seconds...")
-			time.Sleep(5 * time.Second)
-		} else {
-			log.Printf("Discovered server: %s:%d\n", server_host, server_port)
-		}
-	}
+	// var server_host string
+	// var server_port int
+	// for server_host == "" {
+	// 	log.Println("Trying to get server server_host/server_port from discovery service")
+	// 	server_host, server_port = discovery.Discovery(discoveryServerHost, discoveryServerPort, "server", 2)
+	// 	if server_host == "" {
+	// 		log.Println("No server discovered, retrying in 5 seconds...")
+	// 		time.Sleep(5 * time.Second)
+	// 	} else {
+	// 		log.Printf("Discovered server: %s:%d\n", server_host, server_port)
+	// 	}
+	// }
 
-	// discovery repo
-	var repo_host string
-	var repo_port int
-	for repo_host == "" {
-		log.Println("Trying to get repo repo_host/repo_port from discovery service")
-		repo_host, repo_port = discovery.Discovery(*discoveryServerHost, *discoveryServerPort, "repo", 2)
-		if repo_host == "" {
-			log.Println("No server discovered, retrying in 5 seconds...")
-			time.Sleep(5 * time.Second)
-		} else {
-			log.Printf("Discovered repo: %s:%d\n", repo_host, repo_port)
-		}
-	}
+	// // discovery repo
+	// var repo_host string
+	// var repo_port int
+	// for repo_host == "" {
+	// 	log.Println("Trying to get repo repo_host/repo_port from discovery service")
+	// 	repo_host, repo_port = discovery.Discovery(discoveryServerHost, discoveryServerPort, "repo", 2)
+	// 	if repo_host == "" {
+	// 		log.Println("No server discovered, retrying in 5 seconds...")
+	// 		time.Sleep(5 * time.Second)
+	// 	} else {
+	// 		log.Printf("Discovered repo: %s:%d\n", repo_host, repo_port)
+	// 	}
+	// }
 
 	database, err := sql.Open("sqlite3", "./client.db")
 	if err != nil {
@@ -252,7 +290,7 @@ func main() {
 	}
 	defer database.Close()
 
-	// Вызов функции createTables из пакета db
+	// create tables
 	if err := db.CreateTables(database); err != nil {
 		log.Fatal(err)
 	}
@@ -263,13 +301,14 @@ func main() {
 	}
 	log.Printf("MAC address: %s", mac)
 
-	subscriberUID, err := makeRequest(server_host, server_port, mac, database)
-	if err != nil {
-		log.Fatalf("Error making request: %v", err)
-	}
-	log.Printf("Subscriber UID: %s", subscriberUID)
+	var respObj *response.ServerResponse
+	respObj, _ = waitForData(server_host, server_port, mac)
 
-	go connectWebSocket(subscriberUID) // Run in a goroutine to not block main
+	processUdpuData(database, respObj)
+
+	log.Printf("Subscriber UID: %s", respObj.SubscriberUID)
+
+	go connectWebSocket(respObj.SubscriberUID)
 
 	// Keep the main function alive
 	select {}
